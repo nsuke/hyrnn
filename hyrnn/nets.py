@@ -1,9 +1,14 @@
 import itertools
+import torch
 import torch.nn
 import torch.nn.functional
 import math
-import geoopt.manifolds.poincare.math as pmath
+import geoopt.manifolds.stereographic.math as pmath
 import geoopt
+
+
+def to_k(c, ref):
+    return -torch.as_tensor(c).as_type(ref)
 
 
 def mobius_linear(
@@ -16,25 +21,25 @@ def mobius_linear(
     c=1.0,
 ):
     if hyperbolic_input:
-        output = pmath.mobius_matvec(weight, input, c=c)
+        output = pmath.mobius_matvec(weight, input, c=to_k(c, weight))
     else:
         output = torch.nn.functional.linear(input, weight)
-        output = pmath.expmap0(output, c=c)
+        output = pmath.expmap0(output, c=to_k(c, output))
     if bias is not None:
         if not hyperbolic_bias:
-            bias = pmath.expmap0(bias, c=c)
-        output = pmath.mobius_add(output, bias, c=c)
+            bias = pmath.expmap0(bias, c=to_k(c, bias))
+        output = pmath.mobius_add(output, bias, c=to_k(c, output))
     if nonlin is not None:
-        output = pmath.mobius_fn_apply(nonlin, output, c=c)
-    output = pmath.project(output, c=c)
+        output = pmath.mobius_fn_apply(nonlin, output, c=to_k(c, output))
+    output = pmath.project(output, c=to_k(c, output))
     return output
 
 
 def one_rnn_transform(W, h, U, x, b, c):
-    W_otimes_h = pmath.mobius_matvec(W, h, c=c)
-    U_otimes_x = pmath.mobius_matvec(U, x, c=c)
-    Wh_plus_Ux = pmath.mobius_add(W_otimes_h, U_otimes_x, c=c)
-    return pmath.mobius_add(Wh_plus_Ux, b, c=c)
+    W_otimes_h = pmath.mobius_matvec(W, h, c=to_k(c, W))
+    U_otimes_x = pmath.mobius_matvec(U, x, c=to_k(c, U))
+    Wh_plus_Ux = pmath.mobius_add(W_otimes_h, U_otimes_x, c=to_k(c, W_otimes_h))
+    return pmath.mobius_add(Wh_plus_Ux, b, c=to_k(c, Wh_plus_Ux))
 
 
 def mobius_gru_cell(
@@ -50,16 +55,16 @@ def mobius_gru_cell(
     b_r, b_h, b_z = bias
     W_hr, W_hh, W_hz = weight_hh.chunk(3)
 
-    z_t = pmath.logmap0(one_rnn_transform(W_hz, hx, W_iz, input, b_z, c), c=c).sigmoid()
-    r_t = pmath.logmap0(one_rnn_transform(W_hr, hx, W_ir, input, b_r, c), c=c).sigmoid()
+    z_t = pmath.logmap0(one_rnn_transform(W_hz, hx, W_iz, input, b_z, c), c=to_k(c, hx)).sigmoid()
+    r_t = pmath.logmap0(one_rnn_transform(W_hr, hx, W_ir, input, b_r, c), c=to_k(c, hx)).sigmoid()
 
-    rh_t = pmath.mobius_pointwise_mul(r_t, hx, c=c)
+    rh_t = pmath.mobius_pointwise_mul(r_t, hx, c=to_k(c, hx))
     h_tilde = one_rnn_transform(W_hh, rh_t, W_ih, input, b_h, c)
 
     if nonlin is not None:
-        h_tilde = pmath.mobius_fn_apply(nonlin, h_tilde, c=c)
-    delta_h = pmath.mobius_add(-hx, h_tilde, c=c)
-    h_out = pmath.mobius_add(hx, pmath.mobius_pointwise_mul(z_t, delta_h, c=c), c=c)
+        h_tilde = pmath.mobius_fn_apply(nonlin, h_tilde, c=to_k(c, hx))
+    delta_h = pmath.mobius_add(-hx, h_tilde, c=to_k(c, hx))
+    h_out = pmath.mobius_add(hx, pmath.mobius_pointwise_mul(z_t, delta_h, c=to_k(c, hx)), c=to_k(c, hx))
     return h_out
 
 
@@ -76,11 +81,11 @@ def mobius_gru_loop(
     nonlin=None,
 ):
     if not hyperbolic_hidden_state0:
-        hx = pmath.expmap0(h0, c=c)
+        hx = pmath.expmap0(h0, c=to_k(c, h0))
     else:
         hx = h0
     if not hyperbolic_input:
-        input = pmath.expmap0(input, c=c)
+        input = pmath.expmap0(input, c=to_k(c, h0))
     outs = []
     if batch_sizes is None:
         input_unbinded = input.unbind(0)
@@ -139,7 +144,7 @@ class MobiusLinear(torch.nn.Linear):
                 self.ball = manifold = geoopt.PoincareBall(c=c)
                 self.bias = geoopt.ManifoldParameter(self.bias, manifold=manifold)
                 with torch.no_grad():
-                    self.bias.set_(pmath.expmap0(self.bias.normal_() / 4, c=c))
+                    self.bias.set_(pmath.expmap0(self.bias.normal_() / 4, c=to_k(c, self.bias)))
         with torch.no_grad():
             self.weight.normal_(std=1e-2)
         self.hyperbolic_bias = hyperbolic_bias
@@ -174,7 +179,7 @@ class MobiusDist2Hyperplane(torch.nn.Module):
         self.sphere = sphere = geoopt.manifolds.Sphere()
         self.scale = torch.nn.Parameter(torch.zeros(out_features))
         point = torch.randn(out_features, in_features) / 4
-        point = pmath.expmap0(point, c=c)
+        point = pmath.expmap0(point, c=to_k(c, point))
         tangent = torch.randn(out_features, in_features)
         self.point = geoopt.ManifoldParameter(point, manifold=ball)
         with torch.no_grad():

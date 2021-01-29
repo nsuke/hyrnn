@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import geoopt.manifolds.poincare.math as pmath
+import geoopt.manifolds.stereographic.math as pmath
 import geoopt
 import hyrnn
 import functools
